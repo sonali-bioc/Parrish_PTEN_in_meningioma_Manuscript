@@ -1,0 +1,116 @@
+---
+title: "single cells RNASeq Analysis"
+author: "Sonali Arora"
+date: "Dec 9, 2025"
+output: 
+  html_document:
+    toc: true
+    theme: united
+---
+
+In this vignette, we 
+
+```{r}
+library(ggplot2)
+library(RColorBrewer)
+library(Seurat)
+library(GSVA)
+
+seu2 = readRDS("only_batch1_cells/seurat2.rds") # original seurat object containig all cells from human meningioma scRNASeq dataset
+seu4 = readRDS("seurat4_after_filtering.rds") # filtered dataset used in PMID : 39380691 
+midx = match( colnames(seu4), colnames(seu2))
+seurat3 = seu2[, -midx] # make new seurat object which contains tumor cell enriched cells only. 
+
+# seurat processing. 
+seurat3 <- SCTransform(seurat3, vars.to.regress = c("nCount_RNA", "nFeature_RNA", "percent.mito"), verbose = FALSE)
+seurat3 <- RunPCA(seurat3, dims = 1:30)
+seurat3 <- RunUMAP(seurat3,   dims = 1:30)
+seurat3 <- FindNeighbors(seurat3,   dims = 1:30)
+seurat3 <- FindClusters(seurat3)
+test = seurat3
+
+ggdf2 = test@meta.data
+ggdf2$chr10loss = "NO"
+ggdf2$chr10loss[which( ggdf2$sampleID %in%  c( "130908", "130926", "97374", 
+                                               "130866", "130868","130878","130920", "130876", 
+                                               "130904", "130924"))] = "yes"
+
+ggdf2$chr22loss = "yes"
+ggdf2$chr22loss[which( ggdf2$sampleID %in%  c( "85540",
+                                               "97368","97378", "97398" ))] = "NO"
+test$chr10loss = ggdf2$chr10loss
+test$chr22loss = ggdf2$chr22loss
+
+# umap figures for the paper. 
+m1 = DimPlot(test, reduction = "umap" , label = T)
+m2 = DimPlot(test, reduction = "umap", group.by ="MC")
+m3 = DimPlot(test, reduction = "umap", group.by ="WHO")
+m4 = DimPlot(test, reduction = "umap", group.by ="chr10loss")
+m5 = DimPlot(test, reduction = "umap", group.by ="chr22loss")
+
+```
+## enrihcment analysis 
+
+```{r}
+kegg_db <- read.gmt(file.path(extdata, "c2.cp.kegg.v7.2.symbols.gmt")) 
+biocarta_db <- read.gmt(file.path(extdata, "c2.cp.biocarta.v7.2.symbols.gmt")) 
+reactome_db <- read.gmt(file.path(extdata, "c2.cp.reactome.v7.2.symbols.gmt"))
+go_db = read.gmt(file.path(extdata, "c5.go.bp.v7.2.symbols.gmt"))
+ 
+kegg_lst= split(kegg_db, kegg_db[,1]) 
+kegg_lst = lapply(kegg_lst, function(x) x[,2]) 
+biocarta_lst= split(biocarta_db, biocarta_db[,1]) 
+biocarta_lst = lapply(biocarta_lst, function(x) x[,2]) 
+reactome_lst= split(reactome_db, reactome_db[,1]) 
+reactome_lst = lapply(reactome_lst, function(x) x[,2]) 
+
+go_lst= split(go_db, go_db[,1]) 
+go_lst = lapply(go_lst, function(x) x[,2]) 
+
+idx = c(grep("PI3K", names(kegg_lst)), grep("AKT", names(kegg_lst)), 
+       grep("MTOR", names(kegg_lst))  )
+
+idx2 = c(grep("PI3K", names(biocarta_lst)), grep("AKT", names(biocarta_lst)), 
+        grep("MTOR", names(biocarta_lst)) )
+
+idx3 = c(grep("PI3K", names(reactome_lst)), grep("AKT", names(reactome_lst)), 
+        grep("MTOR", names(reactome_lst)) )
+
+idx4 = grep("phosphatidylinositol", tolower(names(go_lst)) )
+
+lst = c(kegg_lst[idx], biocarta_lst[idx2], reactome_lst[idx3], go_lst[idx4])
+lst = lst[-c(which(duplicated(names(lst))) )]
+
+ag = AggregateExpression(obj)
+ag_sct = ag$SCT
+ag_sct = data.matrix(ag_sct)
+ 
+gsvapar <- gsvaParam(ag_sct, lst, maxDiff=TRUE) 
+score <- gsva(gsvapar)  
+
+myPalette <- colorRampPalette(rev(brewer.pal(11, "Spectral")))
+pathwy_sc <- scale_colour_gradientn(colours = myPalette(20), limits=c(-1, 1))
+
+group = as.character(test@meta.data[match(gsub( "g", "", colnames(ag_rna)), 
+                                          test@meta.data$seurat_clusters), "MC" ])
+chr10loss = as.character(test@meta.data[match(gsub( "g", "", colnames(ag_rna)), 
+                                              test@meta.data$seurat_clusters), "chr10loss" ])
+ggdf2 = data.frame( 
+    sampleName = gsub("^g", "", colnames(cpm_counts)), 
+    group, chr10loss)
+
+pdf("GSVA_pathways_by_chr10loss_12_9_2029.pdf")
+l1 = lapply(1:nrow(score), function(y){
+    umap_data = cbind(ggdf2, GSVA = unlist(score[y,  ]))
+    path_name  = rownames(score)[y]
+    umap_data$group = as.factor(umap_data$group)
+    fig1 =  ggplot(umap_data, aes(x = chr10loss, y=GSVA, fill = chr10loss )) +
+        geom_boxplot() + 
+        ggtitle( path_name ) + pathwy_sc +
+        theme_bw()
+    print(fig1)
+})
+dev.off()
+                 
+```
+
