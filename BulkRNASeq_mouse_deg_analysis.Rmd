@@ -1,0 +1,223 @@
+---
+title: "Total RNASeq Analysis"
+author: "Sonali Arora"
+date: "Aug 11, 2025"
+output: 
+  html_document:
+    toc: true
+    theme: united
+---
+
+```{r}
+library(DESeq2)
+library(readxl)
+library(pheatmap)
+library(edgeR)
+library(pheatmap)
+library(ggplot2)
+library(enrichR)
+
+setwd("~/HollandLabShared/Abby/abby_htrna_july2025_pten_meningioma")
+df = read.delim("star_hts_reverse_hg38_raw_protein_coding_genes.txt", header=T, stringsAsFactors=F, row.names=1, check.names=F)
+coldata = data.frame(sampleName = colnames(df), samplegroup = c("NLS-2SA-YAP1", "NLS-2SA-YAP1", "NLS-2SA-YAP1", 
+                                                                "NLS-2SA-YAP1 + Cre", "NLS-2SA-YAP1 + shPTEN", "NLS-2SA-YAP1 + Cre", 
+                                                                "NLS-2SA-YAP1 + Cre", "NLS-2SA-YAP1 + shPTEN", "NLS-2SA-YAP1 + shPTEN")) 
+
+norm_data = cpm(df)
+sampleName = sampleNames = colnames(norm_data)
+
+# calculate PCA
+pc= prcomp(t(norm_data))
+pc_data1 = data.frame(PC1=pc$x[,1], PC2=pc$x[,2] )
+percentVar <- (pc$sdev^2 / sum( pc$sdev^2 ) )*100
+percentVar= round(percentVar[1:2], 2)
+
+# calculate MDS
+sampleDists <- dist( t( norm_data ) )
+sampleDistMatrix <- as.matrix( sampleDists )
+rownames(sampleDistMatrix) <- sampleNames
+colnames(sampleDistMatrix) <- sampleNames
+mdsData <- data.frame(cmdscale(sampleDistMatrix))
+colnames(mdsData) = c("MDS1", "MDS2")
+
+# dendrogram
+
+hc = hclust(sampleDists)
+dend <- as.dendrogram(hc)
+
+all_data1 = data.frame(  pc_data1, mdsData,  coldata)
+p1 = ggplot(all_data1, aes(PC1, PC2, color = samplegroup)) +
+    geom_point(size=4) +theme_bw() +
+    xlab(paste0("PC1: ",percentVar[1],"% variance")) +
+    ylab(paste0("PC2: ",percentVar[2],"% variance"))  +
+    geom_text(aes(label=sampleName),hjust="inward", vjust=2, size=4)
+
+pdf("exploratory_plots.pdf", width = 10)
+plot(hc)
+print(p1)
+dev.off()
+
+```
+
+## DEG analysis
+
+```{r}
+dds2 <- DESeqDataSetFromMatrix(countData = df, 
+                               colData = coldata, design = ~ samplegroup)
+dds2 <- estimateSizeFactors(dds2)
+idx <- which(rowSums(counts(dds2 ))<=4) 
+
+dds2 = dds2[-idx, ]
+dds2= DESeq(dds2)
+
+fc = 1.10
+
+res2 <- results(dds2, alpha = 0.05, lfcThreshold=log2(fc), contrast = c("samplegroup", "NLS-2SA-YAP1 + Cre", "NLS-2SA-YAP1 + shPTEN") )
+summary(res2)
+
+temp_cpm = cpm(df)
+temp_cpm = temp_cpm[rownames(res2), ]
+temp_raw = raw_data[rownames(res2), ]
+colnames(temp_cpm) = paste0("cpm_", colnames(temp_cpm))
+colnames(temp_raw) = paste0("raw_", colnames(temp_raw))
+
+avg_per_group = cbind(rowMeans(temp_cpm[, which(coldata$samplegroup=="NLS-2SA-YAP1 + Cre")]), 
+                      rowMeans(temp_cpm[, which(coldata$samplegroup=="NLS-2SA-YAP1 + shPTEN")]) )
+colnames(avg_per_group) = c("Avg_NLS-2SA-YAP1_Cre", "Avg_NLS-2SA-YAP1_shPTEN")
+
+res2 = cbind(Gene = rownames(res2), res2[, c(2,5,6)], avg_per_group )
+res2 = as.data.frame(res2)
+up_reg = res2[which(res2$log2FoldChange > log2(fc)&  res2$padj < 0.05), ]
+down_reg = res2[which(res2$log2FoldChange < -log2(fc)&  res2$padj < 0.05), ] 
+nrow(up_reg)
+nrow(down_reg)
+up_reg = up_reg[order(up_reg$log2FoldChange , decreasing=T) , ]
+down_reg = down_reg[order(down_reg$log2FoldChange , decreasing=FALSE) , ]
+
+lst = list(all_DE_results = res2, up_reg_genes = up_reg, down_reg_genes = down_reg )
+write_xlsx(lst, path = paste0("All5samples_DESeq2_NLS-2SA-YAP1_Cre_vs_NLS-2SA-YAP1_shpten_fc_",fc,"_fdr_0.05__6_23_2025.xlsx") )
+
+v0_up = up_reg
+v0_down= down_reg
+
+#---------------
+
+res2 <- results(dds2, alpha = 0.05, lfcThreshold=log2(fc), contrast = c("samplegroup", "NLS-2SA-YAP1 + Cre", "NLS-2SA-YAP1") )
+summary(res2)
+
+temp_cpm = cpm(df)
+temp_cpm = temp_cpm[rownames(res2), ]
+temp_raw = raw_data[rownames(res2), ]
+colnames(temp_cpm) = paste0("cpm_", colnames(temp_cpm))
+colnames(temp_raw) = paste0("raw_", colnames(temp_raw))
+
+avg_per_group = cbind(rowMeans(temp_cpm[, which(coldata$samplegroup=="NLS-2SA-YAP1 + Cre")]), 
+                      rowMeans(temp_cpm[, which(coldata$samplegroup=="NLS-2SA-YAP1")]) )
+colnames(avg_per_group) = c("Avg_NLS-2SA-YAP1_Cre", "Avg_NLS-2SA-YAP1")
+
+res2 = cbind(Gene = rownames(res2), res2[, c(2,5,6)], avg_per_group )
+res2 = as.data.frame(res2)
+up_reg = res2[which(res2$log2FoldChange > log2(fc)&  res2$padj < 0.05), ]
+down_reg = res2[which(res2$log2FoldChange < -log2(fc)&  res2$padj < 0.05), ] 
+nrow(up_reg)
+nrow(down_reg)
+up_reg = up_reg[order(up_reg$log2FoldChange , decreasing=T) , ]
+down_reg = down_reg[order(down_reg$log2FoldChange , decreasing=FALSE) , ]
+
+lst = list(all_DE_results = res2, up_reg_genes = up_reg, down_reg_genes = down_reg )
+write_xlsx(lst, path = paste0("All5samples_DESeq2_NLS-2SA-YAP1_Cre_vs_NLS-2SA-YAP1_fc_",fc,"_fdr_0.05__6_23_2025.xlsx") )
+
+v1_up = up_reg
+v1_down= down_reg
+
+
+
+res2 <- results(dds2, alpha = 0.05, lfcThreshold=log2(fc), contrast = c("samplegroup", "NLS-2SA-YAP1 + shPTEN", "NLS-2SA-YAP1") )
+summary(res2)
+
+temp_cpm = cpm(df)
+temp_cpm = temp_cpm[rownames(res2), ]
+temp_raw = raw_data[rownames(res2), ]
+colnames(temp_cpm) = paste0("cpm_", colnames(temp_cpm))
+colnames(temp_raw) = paste0("raw_", colnames(temp_raw))
+
+avg_per_group = cbind(rowMeans(temp_cpm[, which(coldata$samplegroup=="NLS-2SA-YAP1 + shPTEN")]), 
+                      rowMeans(temp_cpm[, which(coldata$samplegroup=="NLS-2SA-YAP1")]) )
+colnames(avg_per_group) = c("Avg_NLS-2SA-YAP1_shPTEN", "Avg_NLS-2SA-YAP1")
+
+res2 = cbind(Gene = rownames(res2), res2[, c(2,5,6)], avg_per_group )
+res2 = as.data.frame(res2)
+up_reg = res2[which(res2$log2FoldChange > log2(fc)&  res2$padj < 0.05), ]
+down_reg = res2[which(res2$log2FoldChange < -log2(fc)&  res2$padj < 0.05), ] 
+nrow(up_reg)
+nrow(down_reg)
+up_reg = up_reg[order(up_reg$log2FoldChange , decreasing=T) , ]
+down_reg = down_reg[order(down_reg$log2FoldChange , decreasing=FALSE) , ]
+
+lst = list(all_DE_results = res2, up_reg_genes = up_reg, down_reg_genes = down_reg )
+write_xlsx(lst, path = paste0("All5samples_DESeq2_NLS-2SA-YAP1_shPTEN_vs_NLS-2SA-YAP1_fc_",fc,"_fdr_0.05__6_23_2025.xlsx") )
+
+
+v2_up = up_reg
+v2_down= down_reg
+```
+
+## find shared genes
+
+```{r}
+length(v1_up$Gene) # 720 # up in Yap1+cre 
+length(v2_up$Gene) # 1267  # up in Yap1+cre  + pten
+shared_up = intersect(v1_up$Gene, v2_up$Gene)
+length(shared_up)#451 # up in both
+
+length(v1_down$Gene) # 813 # down in Yap1+cre 
+length(v2_down$Gene) # 1967 # down  in Yap1+cre  + pten
+shared_down = intersect(v1_down$Gene, v2_down$Gene)
+length(shared_down) #521 # down in both 
+
+shared_genes = c(shared_up, shared_down)
+heatmap_df = norm_data[shared_genes, ]
+
+pdf(paste0("heatmap_degs_using_shared_genes.pdf"))
+pheatmap(heatmap_df, scale = "row" , annotation_col = coldata[, "samplegroup", drop=F], show_rownames = FALSE)
+dev.off()
+```
+
+
+
+## enrichment analysis
+
+```{r}
+my_enrichment_function = function(goi, title, res_folder){
+    dbs <- c("GO_Molecular_Function_2025", "GO_Cellular_Component_2025", 
+             "GO_Biological_Process_2025", "KEGG_2021_Human", "Reactome_2022")
+    enriched = enrichr( goi, dbs)
+    enriched= lapply(enriched, function(z){
+        rm_cols = match(c("Old.P.value", "Old.Adjusted.P.value"), colnames(z))
+        if(length(rm_cols)!=0){
+            z = z[, -c(rm_cols)]
+        }
+        z = z[which(z$Adjusted.P.value < 0.05), ]
+    })
+    
+    write_xlsx(x = enriched, path = file.path(res_folder, paste0(title)) )
+    enriched
+}
+a1  = my_enrichment_function(v2_up$Gene, 
+                             title = paste0("All_genesEnrichr_up_reg_NLS-2SA-YAP1_shPTEN_vs_NLS-2SA-YAP1.xlsx"), resdir)
+b1  = my_enrichment_function(v2_down$Gene, 
+                             title = paste0("All_genesEnrichr_down_reg_NLS-2SA-YAP1_shPTEN_vs_NLS-2SA-YAP1.xlsx"), resdir)
+
+a2  = my_enrichment_function(v1_up$Gene, 
+                             title = paste0("All_genesEnrichr_up_reg_NLS-2SA-YAP1_Cre_vs_NLS-2SA-YAP1.xlsx"), resdir)
+b2  = my_enrichment_function(v1_down$Gene, 
+                             title = paste0("All_genesEnrichr_down_reg_NLS-2SA-YAP1_Cre_vs_NLS-2SA-YAP1.xlsx"), resdir)
+
+a3  = my_enrichment_function(shared_up, 
+                             title = paste0("All_genesEnrichr_shared_up_451genes.xlsx"), resdir)
+b3  = my_enrichment_function(shared_down, 
+                             title = paste0("All_genesEnrichr_shared_down_521genes.xlsx"), resdir)
+
+
+```
+
