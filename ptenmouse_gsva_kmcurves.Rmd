@@ -1,0 +1,588 @@
+
+---
+title: "GSVA and KM curves on Pten deficient mouse model"
+output: html_notebook
+author: Nayanga Thirimanne
+date: "November 2025"
+---
+
+```{r}
+BiocManager::install("GSVA")
+library(GSVA)
+library(clusterProfiler)
+library(SummarizedExperiment)
+library(GSEABase)
+library(edgeR)
+library(qusage)
+library(biomaRt)
+library(ggsurvfit)
+library(survminer)
+```
+
+Loading data and metadata files
+```{r}
+#load human meningioma bulk RNA-seq normalized counts
+mening_tpm <- readRDS("~/1298samples_combatseq_log2tpm.rds")
+
+#load biomart mouse to human ortholog list from ensembl site
+biomartexp <- read.csv("~/References/biomart_ensembl_mouseGRCm39_human_ortholog_export_091525.csv", check.names = F)
+biomart_mm_hg <- biomartexp[, 6:7]
+#remove duplicates from biomart_mm_hg file
+biomart_mm_hg <- biomart_mm_hg[!duplicated(biomart_mm_hg$Mouse_gene_name), ]
+
+#load umap coordinates
+mening_umap <- read.csv("~/1298_umap2d_vst.csv", check.names = F)
+colnames(mening_umap)[2] <- "SAMPLE_NAME"
+mening_umap2 <- mening_umap[, c(2,3,4)]
+
+# load metadata file
+sample_info <-read.csv("~/Meningioma_clinical_patient_v61_20240430.csv", check.names = F)
+
+```
+
+Convert mouse genes to human ortholog
+```{r}
+mm_hg <- left_join(mouse_pten_genes, biomart_mm_hg, by= "Mouse_gene_name", multiple = "first")
+```
+
+GSVA analysis 
+```{r}
+up_human <- mm_hg$Human_gene_name[
+  match(pten_genes$Upregulated, mm_hg$Mouse_gene_name)
+]
+
+down_human <- mm_hg$Human_gene_name[
+  match(pten_genes$Downregulated, mm_hg$Mouse_gene_name)
+]
+
+pten_genes_human <- data.frame(
+  Upregulated = up_human,
+  Downregulated = down_human
+)
+
+pten_genes_human[is.na(pten_genes_human)] <- NA
+pten_genes_human[pten_genes_human == ""] <- NA
+
+list_am = list(up_genes = pten_genes_human$Upregulated, down_genes = pten_genes_human$Downregulated) 
+list_am2 <- purrr::transpose(list_am) %>% purrr::transpose(.)
+
+#calculate gsva for the samples in nf2 mutant cloud in meningioma umap
+nf2mut_cloud <- sample_info[(sample_info$DBSCAN_CLUSTER == "A" | sample_info$DBSCAN_CLUSTER == "B"), ]
+mening_tpm_nf2mut <- mening_tpm[, (colnames(mening_tpm) %in% nf2mut_cloud$coordinate_ID)]
+gsvapar <- gsvaParam(mening_tpm_nf2mut, list_am2, maxDiff=TRUE)
+res <- GSVA::gsva(gsvapar)
+saveRDS(res, "~/gsva_mouse_pten_nf2mut.rds")
+
+
+```
+
+Visualize GSVA counts: color in UMAP by GSVA counts
+```{r}
+res <- readRDS("~/gsva_mouse_pten_nf2mut.rds")
+gsva_mel.t <- as.data.frame(t(res)) %>% rownames_to_column(., "SAMPLE_NAME")
+ggdf = left_join(mening_umap2, gsva_mel.t, by="SAMPLE_NAME")
+
+ggplot(ggdf,
+       aes(
+         x = UMAP1_2D, 
+         y = UMAP2_2D, 
+         color = down_genes
+       )
+) + 
+  geom_point(size=1.5) +
+  theme_bw() +
+  ggtitle("Downregulated genes in PTEN deficient mice") +
+  theme(legend.title = element_blank(), legend.text = element_text(size=14), plot.title = element_text(size = 9))+
+  scale_colour_gradientn(colours = c(low="blue",mid="white", high="red"))
+
+ggsave("gsva_downregulated_genes_pten_nf2mut.pdf", width = 10, height = 7)
+
+ggplot(ggdf,
+       aes(
+         x = UMAP1_2D, 
+         y = UMAP2_2D, 
+         color = up_genes
+       )
+) + 
+  geom_point(size=1.5) +
+  theme_bw() +
+  ggtitle("Upregulated genes in PTEN deficient mice") +
+  theme(legend.title = element_blank(), legend.text = element_text(size=14), plot.title = element_text(size = 9))+
+  scale_colour_gradientn(colours = c(low="blue",mid="white", high="red") , limits=c(-0.3,0.3))
+
+ggsave("gsva_upregulated_genes_pten_nf2mut.pdf", width = 10, height = 7)
+
+```
+
+Load mouse genes from Pten deficient mice
+This file contains upregulated and downregulated genes in shPten and cre-Pten mice, and common upregulated and common downregulated genes among both shPten and crePten mice. 
+```{r}
+#load mouse gene lists (pten cre and sh, upregulated and downregulated)
+venn_file <- read.csv("~/20250915_Venn_Diagrams_2.csv", check.names = F)
+
+#convert mouse genes to human (columns 3:8)
+for (col in 3:8) {
+  venn_file[[col]] <- biomart_mm_hg$Human_gene_name[
+    match(venn_file[[col]], biomart_mm_hg$Mouse_gene_name)
+  ]
+}
+venn_file[venn_file == ""] <- NA
+write.csv(venn_file, "~/20250915_Venn_Diagrams_3_humangenes.csv")
+
+```
+
+Run GSVA analysis
+```{r}
+
+list_am = list(up_genes_cre = venn_file$`Up-regulated in Cre`, down_genes_cre = venn_file$`Down-regulated in Cre`,
+               up_genes_sh = venn_file$`Up-regulated in shPTEN`, down_genes_sh = venn_file$`Downregulated in shPTEN`, 
+               common_up_genes = venn_file$`Shared Up`, common_down_genes = venn_file$`Shared Down`
+) 
+
+list_am2 <- purrr::transpose(list_am) %>% purrr::transpose(.)
+
+
+mening_tpm_nf2mut <- mening_tpm[, (colnames(mening_tpm) %in% nf2mut_cloud$coordinate_ID)]
+
+gsvapar <- gsvaParam(mening_tpm_nf2mut, list_am2, maxDiff=TRUE)
+res <- GSVA::gsva(gsvapar)
+
+saveRDS(res, "~/gsva_mouse_pten_cre_sh_common.rds")
+
+```
+
+visualize gsva scores
+```{r}
+res <- readRDS("~/gsva_mouse_pten_cre_sh_common.rds")
+gsva_mel.t <- as.data.frame(t(res)) %>% rownames_to_column(., "SAMPLE_NAME")
+
+ggdf = left_join(mening_umap2, gsva_mel.t, by="SAMPLE_NAME")
+ggplot(ggdf,
+       aes(
+         x = UMAP1_2D, 
+         y = UMAP2_2D, 
+         color = up_genes_cre
+       )
+) + 
+  geom_point(size=1.5) +
+  theme_bw() +
+  ggtitle("Upregulated genes in PTEN (Cre) deficient mice") +
+  theme(legend.title = element_blank(), legend.text = element_text(size=14), plot.title = element_text(size = 9))+
+  scale_colour_gradientn(colours = c(low="blue",mid="white", high="red"), limits=c(-0.5,0.5))
+
+ggsave("gsva_upregulated_genes_pten_cre.pdf", width = 10, height = 7)
+
+```
+
+function to plot multiple comparisons
+```{r}
+plot_and_save <- function(data, columns) {
+  for (col in columns) {
+    p <- ggplot(data, aes(
+      x = UMAP1_2D,
+      y = UMAP2_2D,
+      color = .data[[col]]    
+    )) +
+      geom_point(size = 1.5) +
+      theme_bw() +
+      ggtitle(col) +
+      theme(
+        legend.title = element_blank(),
+        legend.text = element_text(size = 14),
+        plot.title = element_text(size = 9)
+      ) +
+      scale_colour_gradientn(
+        colours = c("blue", "white", "red"),
+        limits = c(-1, 1)
+      )
+    
+    ggsave(
+      filename = paste0("gsva_", col, ".pdf"),
+      plot = p,
+      width = 10,
+      height = 7
+    )
+  }
+}
+
+# Example usage:
+columns_to_plot <- c(
+  "`Up-regulated in Cre`", "Down-regulated in Cre",
+  "`Up-regulated in shPTEN`", "`Downregulated in shPTEN`",
+  "`Shared Up`", "`Shared Down`"
+)
+
+plot_and_save(ggdf, columns_to_plot)
+```
+
+plot ratio of gsva up and down scores
+```{r}
+
+plot_and_save <- function(data, columns) {
+  for (col in columns) {
+    p <- ggplot(data, aes(
+      x = UMAP1_2D,
+      y = UMAP2_2D,
+      color = .data[[col]]        # <- use tidy eval to reference column dynamically
+    )) +
+      geom_point(size = 1.5) +
+      theme_bw() +
+      ggtitle(col) +
+      theme(
+        legend.title = element_blank(),
+        legend.text = element_text(size = 14),
+        plot.title = element_text(size = 9)
+      ) +
+      scale_colour_gradientn(
+        colours = c("blue", "white", "red")
+      )
+    
+    ggsave(
+      filename = paste0("gsva_", col, ".pdf"),
+      plot = p,
+      width = 10,
+      height = 7
+    )
+  }
+}
+
+
+ggdf$ratio_cre <- (ggdf$up_genes_cre + 1)/(ggdf$down_genes_cre + 1)
+ggdf$ratio_sh <- (ggdf$up_genes_sh +1)/(ggdf$down_genes_sh + 1)
+ggdf$ratio_cre_sh_shared <- (ggdf$common_up_genes + 1)/(ggdf$common_down_genes + 1)
+
+columns_to_plot <- c(
+"ratio_cre", "ratio_sh", "ratio_cre_sh_shared"
+)
+
+plot_and_save(ggdf, columns_to_plot)
+
+```
+
+
+KM plots: ratio of shPTEN
+```{r}
+
+timetorec <- sample_info[, c("coordinate_ID", "time_for_KM_final", )]
+colnames(timetorec)[1] <- "SAMPLE_NAME"
+
+ggdf_rec <- left_join(ggdf, timetorec, by="SAMPLE_NAME")
+
+# KM plots for high and low ratio samples
+ggdf_sub <- ggdf[, c("SAMPLE_NAME", "ratio_sh")]
+summary(ggdf_sub$ratio_sh)
+
+#Min. 1st Qu.  Median    Mean 3rd Qu.    Max.    NA's 
+#0.5226  0.7971  0.9974  1.0733  1.2811  2.5960     532 
+
+gs_H <- subset(ggdf_sub, ggdf_sub$ratio_sh >= 1.2811)
+gs_L <- subset(ggdf_sub, ggdf_sub$ratio_sh <= 0.7971)
+
+sample_1298 <- subset(sample_info, sample_info$coordinate_ID %in% colnames(mening_tpm_nf2mut))
+sample_timetorec <- subset(sample_1298, !(sample_1298$has_the_tumor_progressed == "yes")) %>% subset(., !(.$time_for_KM_final == "na"))
+#sample_timetorec <- subset(sample_timetorec, sample_timetorec$DBSCAN_CLUSTER == "A")
+
+time_rec <- sample_timetorec[, c("coordinate_ID","time_for_KM_final", "RECURRENT_TUMOR")]
+colnames(time_rec) <- c("SAMPLE_NAME", "time", "status")
+#remove samples with status=na
+timerec <- subset(time_rec, !(time_rec$status == "na")) %>% subset(., !(.$time == "na"))
+
+timerec$status[timerec$status == "yes"] <- "1"
+timerec$status[timerec$status == "no"] <- "0"
+timerec$time <- as.numeric( timerec$time)
+timerec$status <- as.numeric( timerec$status)
+
+
+timerec$group[timerec$SAMPLE_NAME %in% gs_H$SAMPLE_NAME] <- "High"
+timerec$group[timerec$SAMPLE_NAME %in% gs_L$SAMPLE_NAME] <- "Low"
+
+#timerec <- na.omit(timerec)
+fitAll <- surv_fit(Surv(time, status) ~ group, data = timerec)
+#summary(survfit2(Surv(time, status) ~ Loss, data = timerec), times = 60)
+surv_pvalue(fitAll)
+
+
+mycol <- c( "red", "blue")
+ggsurvplot(fitAll,
+           conf.int = FALSE,
+           data = timerec,
+           pval = TRUE,
+           pval.method = FALSE,
+           risk.table = FALSE, 
+           combine = TRUE, 
+           ylab = "Recurrence-free Rate", 
+           xlab = "Time (months)", 
+           ggtheme = theme_KM, 
+           palette = mycol)
+
+ggsave("KM_gsva_ratio_shPTEN_quartile.pdf", height = 5, width=7)
+
+```
+
+
+ratio of cre
+```{r}
+# KM plots for high and low ratio samples
+ggdf_sub <- ggdf[, c("SAMPLE_NAME", "ratio_cre")]
+summary(ggdf_sub$ratio_cre)
+
+#Min. 1st Qu.  Median    Mean 3rd Qu.    Max.    NA's 
+# 0.7074  0.9156  0.9995  1.0085  1.0863  1.5087     532 
+
+gs_H <- subset(ggdf_sub, ggdf_sub$ratio_cre >= 1.0863)
+gs_L <- subset(ggdf_sub, ggdf_sub$ratio_cre <= 0.9156)
+
+sample_1298 <- subset(sample_info, sample_info$coordinate_ID %in% colnames(mening_tpm_nf2mut))
+sample_timetorec <- subset(sample_1298, !(sample_1298$has_the_tumor_progressed == "yes")) %>% subset(., !(.$time_for_KM_final == "na"))
+#sample_timetorec <- subset(sample_timetorec, sample_timetorec$DBSCAN_CLUSTER == "A")
+
+time_rec <- sample_timetorec[, c("coordinate_ID","time_for_KM_final", "RECURRENT_TUMOR")]
+colnames(time_rec) <- c("SAMPLE_NAME", "time", "status")
+#remove samples with status=na
+timerec <- subset(time_rec, !(time_rec$status == "na")) %>% subset(., !(.$time == "na"))
+
+timerec$status[timerec$status == "yes"] <- "1"
+timerec$status[timerec$status == "no"] <- "0"
+timerec$time <- as.numeric( timerec$time)
+timerec$status <- as.numeric( timerec$status)
+
+
+timerec$group[timerec$SAMPLE_NAME %in% gs_H$SAMPLE_NAME] <- "High"
+timerec$group[timerec$SAMPLE_NAME %in% gs_L$SAMPLE_NAME] <- "Low"
+
+#timerec <- na.omit(timerec)
+fitAll <- surv_fit(Surv(time, status) ~ group, data = timerec)
+#summary(survfit2(Surv(time, status) ~ Loss, data = timerec), times = 60)
+surv_pvalue(fitAll)
+
+
+mycol <- c( "red", "blue")
+ggsurvplot(fitAll,
+           conf.int = FALSE,
+           data = timerec,
+           pval = TRUE,
+           pval.method = FALSE,
+           risk.table = FALSE, 
+           combine = TRUE, 
+           ylab = "Recurrence-free Rate", 
+           xlab = "Time (months)", 
+           ggtheme = theme_KM, 
+           palette = mycol)
+
+ggsave("KM_gsva_ratio_shCre_quartile.pdf", height = 5, width=7)
+
+```
+
+
+ratio of shared cre and sh
+```{r}
+# KM plots for high and low ratio samples
+ggdf_sub <- ggdf[, c("SAMPLE_NAME", "ratio_cre_sh_shared")]
+summary(ggdf_sub$ratio_cre_sh_shared)
+
+#Min. 1st Qu.  Median    Mean 3rd Qu.    Max.    NA's 
+# 0.1928  0.4509  0.9662  1.3817  1.9487  5.4217     532 
+
+gs_H <- subset(ggdf_sub, ggdf_sub$ratio_cre_sh_shared >= 1.9487)
+gs_L <- subset(ggdf_sub, ggdf_sub$ratio_cre_sh_shared <= 0.4509)
+
+sample_1298 <- subset(sample_info, sample_info$coordinate_ID %in% colnames(mening_tpm_nf2mut))
+sample_timetorec <- subset(sample_1298, !(sample_1298$has_the_tumor_progressed == "yes")) %>% subset(., !(.$time_for_KM_final == "na"))
+#sample_timetorec <- subset(sample_timetorec, sample_timetorec$DBSCAN_CLUSTER == "A")
+
+time_rec <- sample_timetorec[, c("coordinate_ID","time_for_KM_final", "RECURRENT_TUMOR")]
+colnames(time_rec) <- c("SAMPLE_NAME", "time", "status")
+#remove samples with status=na
+timerec <- subset(time_rec, !(time_rec$status == "na")) %>% subset(., !(.$time == "na"))
+
+timerec$status[timerec$status == "yes"] <- "1"
+timerec$status[timerec$status == "no"] <- "0"
+timerec$time <- as.numeric( timerec$time)
+timerec$status <- as.numeric( timerec$status)
+
+
+timerec$group[timerec$SAMPLE_NAME %in% gs_H$SAMPLE_NAME] <- "High"
+timerec$group[timerec$SAMPLE_NAME %in% gs_L$SAMPLE_NAME] <- "Low"
+
+#timerec <- na.omit(timerec)
+fitAll <- surv_fit(Surv(time, status) ~ group, data = timerec)
+#summary(survfit2(Surv(time, status) ~ Loss, data = timerec), times = 60)
+surv_pvalue(fitAll)
+
+mycol <- c( "red", "blue")
+ggsurvplot(fitAll,
+           conf.int = FALSE,
+           data = timerec,
+           pval = TRUE,
+           pval.method = FALSE,
+           risk.table = FALSE, 
+           combine = TRUE, 
+           ylab = "Recurrence-free Rate", 
+           xlab = "Time (months)", 
+           ggtheme = theme_KM, 
+           palette = mycol)
+
+ggsave("KM_gsva_ratio_shCre_shared_quartile.pdf", height = 5, width=7)
+
+```
+
+
+KM plots: cre and shPten, with and without Chr10 loss
+```{r}
+
+res <- readRDS("~/gsva_mouse_pten_cre_sh_common.rds")
+gsva_mel.t <- as.data.frame(t(res)) %>% rownames_to_column(., "SAMPLE_NAME")
+mening_umap <- read.csv("~/1298_umap2d_vst.csv", check.names = F)
+colnames(mening_umap)[2] <- "SAMPLE_NAME"
+mening_umap2 <- mening_umap[, c(2,3,4)]
+ggdf = left_join(mening_umap2, gsva_mel.t, by="SAMPLE_NAME")
+
+#SCENARIO 1
+# ggdf$ratio_sh <- (ggdf$up_genes_sh +1)/(ggdf$down_genes_sh + 1)
+# ggdf_sub <- ggdf[, c("SAMPLE_NAME", "ratio_sh")]
+# summary(ggdf_sub$ratio_sh)
+# #Min. 1st Qu.  Median    Mean 3rd Qu.    Max.    NA's
+# #0.5226  0.7971  0.9974  1.0733  1.2811  2.5960     532
+# gs_H <- subset(ggdf_sub, ggdf_sub$ratio_sh >= 1.2811)
+# gs_L <- subset(ggdf_sub, ggdf_sub$ratio_sh <= 0.7971)
+
+#SCENARIO 2
+# ggdf$ratio_cre <- (ggdf$up_genes_cre +1)/(ggdf$down_genes_cre + 1)
+# ggdf_sub <- ggdf[, c("SAMPLE_NAME", "ratio_cre")]
+# summary(ggdf_sub$ratio_cre)
+# #Min. 1st Qu.  Median    Mean 3rd Qu.    Max.    NA's
+# # 0.7074  0.9156  0.9995  1.0085  1.0863  1.5087     532
+# gs_H <- subset(ggdf_sub, ggdf_sub$ratio_cre >= 1.0863)
+# gs_L <- subset(ggdf_sub, ggdf_sub$ratio_cre <= 0.9156)
+
+#SCENARIO 3
+ggdf$ratio_shared <- (ggdf$common_up_genes +1)/(ggdf$common_down_genes + 1)
+ggdf_sub <- ggdf[, c("SAMPLE_NAME", "ratio_shared")]
+summary(ggdf_sub$ratio_shared)
+#Min. 1st Qu.  Median    Mean 3rd Qu.    Max.    NA's
+# 0.1928  0.4509  0.9662  1.3817  1.9487  5.4217     532
+gs_H <- subset(ggdf_sub, ggdf_sub$ratio_shared >= 1.9487)
+gs_L <- subset(ggdf_sub, ggdf_sub$ratio_shared <= 0.4509)
+
+nf2mut_cloud <- sample_info[(sample_info$DBSCAN_CLUSTER == "A" | sample_info$DBSCAN_CLUSTER == "B"), ]
+
+sample_1298 <- subset(sample_info, sample_info$coordinate_ID %in% nf2mut_cloud$coordinate_ID)
+sample_timetorec <- subset(sample_1298, !(sample_1298$has_the_tumor_progressed == "yes")) %>% subset(., !(.$time_for_KM_final == "na"))
+#sample_timetorec <- subset(sample_timetorec, sample_timetorec$DBSCAN_CLUSTER == "A")
+
+time_rec <- sample_timetorec[, c("coordinate_ID","time_for_KM_final", "RECURRENT_TUMOR")]
+colnames(time_rec) <- c("SAMPLE_NAME", "time", "status")
+#remove samples with status=na
+timerec <- subset(time_rec, !(time_rec$status == "na")) %>% subset(., !(.$time == "na"))
+
+timerec$status[timerec$status == "yes"] <- "1"
+timerec$status[timerec$status == "no"] <- "0"
+timerec$time <- as.numeric( timerec$time)
+timerec$status <- as.numeric( timerec$status)
+
+#sample_info$CNA_CHR_10Q
+CNV10 <- sample_info[ , c("coordinate_ID", "CNA_CHR_10Q")]
+colnames(CNV10)[1] <- "SAMPLE_NAME"
+CNV10_Loss <- subset(CNV10, CNV10$CNA_CHR_10Q == "-1")
+CNV10_Intact <- subset(CNV10, !(CNV10$CNA_CHR_10Q == "-1"))
+gs_H$Chr10[gs_H$SAMPLE_NAME %in% CNV10_Loss$SAMPLE_NAME] <- "Loss"
+gs_H$Chr10[gs_H$SAMPLE_NAME %in% CNV10_Intact$SAMPLE_NAME] <- "Intact"
+
+timerec$group[timerec$SAMPLE_NAME %in% gs_L$SAMPLE_NAME] <- "Low PTEN"
+timerec$group[timerec$SAMPLE_NAME %in% (gs_H$SAMPLE_NAME[gs_H$Chr10 == "Loss"])] <- "High PTEN + Chr10 Loss"
+#timerec$group[timerec$SAMPLE_NAME %in% (gs_H$SAMPLE_NAME[gs_H$Chr10 == "Intact"])] <- "High PTEN + Chr10 Intact"
+timerec$groupchr10[timerec$SAMPLE_NAME %in% (gs_H$SAMPLE_NAME[gs_H$Chr10 == "Loss"])] <- "High PTEN + Chr10 Loss"
+timerec$groupchr10[timerec$SAMPLE_NAME %in% (gs_H$SAMPLE_NAME[gs_H$Chr10 == "Intact"])] <- "High PTEN + Chr10 Intact"
+timerec$grouppten[timerec$SAMPLE_NAME %in% gs_L$SAMPLE_NAME] <- "Low PTEN"
+timerec$grouppten[timerec$SAMPLE_NAME %in% (gs_H$SAMPLE_NAME[gs_H$Chr10 == "Intact"])] <- "High PTEN + Chr10 Intact"
+
+#tiemrec$Group[timerec$SAMPLE_NAME %in% gs_L$SAMPLE_NAME] <- "Low PTEN"
+
+fitAll <- surv_fit(Surv(time, status) ~ group, data = timerec)
+
+fit1 <- surv_fit(Surv(time, status) ~ group, data = timerec)
+fit2 <- surv_fit(Surv(time, status) ~ groupchr10, data = timerec)
+fit3 <- surv_fit(Surv(time, status) ~ grouppten, data = timerec)
+
+fit.list <- list(group = fit1, groupchr10 = fit2, grouppten = fit3)
+
+#summary(survfit2(Surv(time, status) ~ Loss, data = timerec), times = 60)
+#surv_pvalue(fitAll)
+
+surv_pvalue(fit.list)
+
+mycol <- c( "brown", "red", "blue" )
+ggsurvplot(fitAll,
+           conf.int = FALSE,
+           data = timerec,
+           pval = FALSE,
+           pval.method = FALSE,
+           risk.table = FALSE, 
+           combine = TRUE, 
+           ylab = "Recurrence-free Rate", 
+           xlab = "Time (months)", 
+           ggtheme = theme_KM,
+           palette = mycol)
+
+#ggsave("KM_gsva_ratio_shPTEN_quartile_chr10.pdf", height = 10, width=13)
+#ggsave("KM_gsva_ratio_crePTEN_quartile_chr10.pdf", height = 10, width=13)
+#ggsave("KM_gsva_ratio_sharedPTEN_quartile_chr10.pdf", height = 10, width=13)
+
+```
+
+
+Dot plots to visualize enriched pathways
+```{r}
+
+plot_title_size = 12
+legend_pt_size = 6
+axis_text_size = 100
+axis_title_size = 15
+legend_text_size = 10
+spacing = 0.5
+chosen_margin = c(0.5,1,0.5,1) #top,right,bottom,left
+
+theme_grid_nolegend <- theme_bw()+
+  theme(plot.title = element_text(hjust=0, vjust=0, lineheight=.8, face="bold", size=plot_title_size),
+        plot.margin = unit(chosen_margin,"cm"),
+        legend.text = element_text(size=legend_text_size),
+        legend.key.height = unit(spacing,"cm"),
+        legend.position = "none",
+        legend.justification = "left",
+        legend.title = element_blank())
+
+theme_grid_legend <- theme_bw()+
+  theme(plot.title = element_text(hjust=0, vjust=0, lineheight=.8, face="bold", size=plot_title_size),
+        plot.margin = unit(chosen_margin,"cm"),
+        legend.text = element_text(size=legend_text_size),
+        legend.key.height = unit(spacing,"cm"),
+        legend.position = "right",
+        legend.justification = "left",
+        legend.title = element_text())
+
+#Enrichr output (GO BP)
+cre_gobp <- readxl::read_xlsx("~/Cre_down_GO_Biological_Process_2025_table.xlsx") %>%
+  subset(., .$Figure == "yes")
+
+cre_kegg <- readxl::read_xlsx("~/Cre_down_KEGG_2021_Human_table.xlsx") %>%
+  subset(., .$Figure == "yes")
+
+cre_bokegg <- rbind(cre_gobp, cre_kegg)
+colnames(cre_bokegg)[3] <- "Gene Ratio"
+cre_bokegg$`Gene Ratio` <- signif(as.numeric(cre_bokegg$`Gene Ratio`), 2)
+
+ggplot(
+  cre_bokegg %>% mutate(Term = factor(Term, levels = unique(Term))),
+  aes(x = -log10(`Adjusted P-value`), y = Term,
+      size = `Gene Ratio`, color = -log10(`Adjusted P-value`))
+) +
+  geom_point(stat = "identity") +
+  scale_color_gradient(low = "blue", high = "red") +
+  ylab("") +
+  theme_grid_legend +
+  xlab("-log10(p.adjust)") +
+  ggtitle("PTEN-Cre Down GO and KEGG")
+
+ggsave("cre_down_go_kegg.pdf", width = 15, height = 10)
+
+```
