@@ -1,0 +1,531 @@
+---
+title: "Metadata visualization and KM curves"
+output: html_notebook
+author: Nayanga Thirimanne
+date: "November 2025"
+---
+
+```{r}
+library(ggplot2)
+library(RColorBrewer)
+library(dplyr)
+install.packages("ggsurvfit")
+library(ggsurvfit)
+install.packages("survminer")
+library(survminer)
+library(ggpubr)
+
+```
+
+ggplot2 specifications
+```{r}
+plot_title_size = 35
+legend_pt_size = 25
+axis_text_size = 23
+axis_title_size = 27
+legend_text_size = 15
+spacing = 1
+chosen_margin = c(0.5,1,0.5,1) #top,right,bottom,left
+
+theme_legend <- theme_void()+
+  theme(plot.title = element_text(hjust=0, vjust=0, lineheight=.8, face="bold", size=plot_title_size),
+        plot.margin = unit(chosen_margin,"cm"),
+        legend.text = element_text(size=legend_text_size),
+        legend.key.height = unit(spacing,"cm"),
+        legend.position = "right",
+        legend.justification = "left",
+        legend.title = element_blank() )
+
+theme_nolegend <- theme_void()+
+  theme(plot.title = element_text(hjust=0, vjust=0, lineheight=.8, face="bold", size=plot_title_size),
+        plot.margin = unit(chosen_margin,"cm"),
+        legend.text = element_text(size=legend_text_size),
+        legend.key.height = unit(spacing,"cm"),
+        legend.position = "none",
+        legend.justification = "left",
+        legend.title = element_blank() )
+
+plot_title_size = 35
+legend_pt_size = 25
+axis_text_size_km = 15
+axis_title_size_km = 20
+legend_text_size = 15
+spacing = 1
+chosen_margin = c(0.5,1,0.5,1)
+
+theme_KM <- theme_bw()+
+  theme(plot.title = element_text(hjust=0, vjust=0, lineheight=.8, face="bold", size=plot_title_size),
+        plot.margin = unit(chosen_margin,"cm"),
+        legend.text = element_text(size=legend_text_size, face = "bold"),
+        legend.key.height = unit(spacing,"cm"),
+        legend.position = "top",
+        legend.justification = "left",
+        legend.title = element_blank() ,
+        axis.text = element_text(size = axis_text_size_km, face = "bold", color = "black"),
+        axis.title = element_text(size = axis_title_size_km, face = "bold", color = "black"))
+        
+```
+
+
+```{r}
+mening_umap2d <- read.csv("~/1298_vst_umap2dcoord.csv", check.names = F)
+menin_CNV <- read.csv("~/1298_CNVcalls.csv", check.names = F) %>% .[,-c(1, 47,48)]
+finaldf_CNV <- left_join(mening_umap2d, menin_CNV, by="coordinate_ID")
+
+sample_info <-read.csv("~/Meningioma_clinical_patient_v61_20240430.csv", check.names = F)
+finaldf <- left_join(mening_umap2d, sample_info, by="coordinate_ID")
+
+mening_vst <- readRDS("~/batchcor_vstcounts_1298.rds")
+
+```
+
+WHO Grade
+```{r}
+ggplot( finaldf %>% 
+          arrange(factor(WHO_GRADE)),
+        aes(
+          x = UMAP1_2D, 
+          y = UMAP2_2D,
+          color = factor(WHO_GRADE),
+        )
+) + 
+  geom_point(size=1.5) +
+  theme_legend+
+  ggtitle("WHO Grade") + 
+  scale_color_manual(values = c(
+    'WHO 1' = "forestgreen",
+    'WHO 2' = "gold",
+    'WHO 3' = "red",
+    "na" = "grey"
+  ))
+
+ggsave("WHOgrade_noleg.pdf", width = 7, height = 7)
+ggsave("WHOgrade_leg.pdf", width = 10, height = 7)
+```
+
+
+```{r}
+finaldf$cluster[finaldf$DBSCAN_CLUSTER == "B"] <- "Benign NF2 mut"
+finaldf$cluster[finaldf$DBSCAN_CLUSTER == "C"] <- "NF2wt"
+finaldf$cluster[finaldf$DBSCAN_CLUSTER == "A"] <- "Aggr.Int.NF2mut"
+
+ggplot( finaldf %>% 
+          arrange(factor(cluster)),
+        aes(
+          x = UMAP1_2D, 
+          y = UMAP2_2D,
+          color = factor(cluster),
+        )
+) + 
+  geom_point(size=1.5) +
+  theme_nolegend+
+  ggtitle("Clusters") + 
+  scale_color_manual(values = c(
+    'Aggr.Int.NF2mut' = "red",
+    'Benign NF2 mut' = "forestgreen",
+    'NF2wt' = "blue",
+    "na" = "grey"
+  ))
+
+ggsave("clusters_A2BC_2_noleg.pdf", width = 7, height = 7)
+ggsave("clusters_A2BC_2_leg.pdf", width = 10, height = 7)
+```
+
+Chr22 Loss (from metadata) + CDKN2A 
+```{r}
+#finaldf$CDKN2A_B_LOSS[is.na(finaldf$CDKN2A_B_LOSS)] <- "na"
+FF <- subset(finaldf, finaldf$CDKN2A_B_LOSS == "yes") 
+finaldf$chrcdk[finaldf$CHR22LOSS == "yes"] <- "Chr22 Loss"
+finaldf$chrcdk[finaldf$CHR22LOSS == "no"] <- "Chr22 Intact"
+finaldf$chrcdk[finaldf$CHR22LOSS == "na"] <- "na"
+finaldf$chrcdk[finaldf$CDKN2A_B_LOSS == "yes"] <- "CDKN2A/B Loss"
+table(finaldf$CDKN2A_B_LOSS)
+
+FF <- subset(finaldf, finaldf$chrcdk == "Chr22 Loss") 
+FF2 <- subset(finaldf, finaldf$chrcdk == "CDKN2A/B Loss")
+FF3 <- subset(finaldf, finaldf$chrcdk == "Chr22 Intact")
+
+ggplot( finaldf %>% 
+          arrange(factor(chrcdk)),
+        aes(
+          x = UMAP1_2D, 
+          y = UMAP2_2D,
+          color = factor(chrcdk),
+        )
+) + 
+  geom_point(aes(color = factor(chrcdk)), size=1.5) +
+  geom_point(data=FF3, aes(x=UMAP1_2D, y=UMAP2_2D, color=factor(chrcdk)), size = 1.5) +
+  geom_point(data=FF, aes(x=UMAP1_2D, y=UMAP2_2D, color=factor(chrcdk)), size = 1.5) +
+  geom_point(data=FF2, aes(x=UMAP1_2D, y=UMAP2_2D, shape = "CDKN2A/B Loss"), size = 2, color = "black") +
+  theme_legend + 
+  ggtitle("Chr22 and CDKN2A/B ") +
+  scale_color_manual(values = c("na" = "grey",
+                                'Chr22 Intact' = "blue",
+                              'Chr22 Loss' = "red"
+                                
+  )) + 
+  scale_shape_manual(values = c("CDKN2A/B Loss" = 17))
+
+ggsave("Chr22Loss_CDKN2AB_v2_noleg.pdf", width = 7, height = 7)
+ggsave("Chr22Loss_CDKN2AB_v2_leg.pdf", width = 10, height = 7)
+
+```
+
+KM plot - CDKN2A loss
+Tumors with CDKN2A loss and intact samples in Aggressive NF2 mutant region (Cluster A)
+```{r}
+#read metadata file to extract time to recurrence information
+sample_info <-read.csv("~/Meningioma_clinical_patient_v61_20240430.csv", check.names = F)
+
+sample_1298 <- subset(sample_info, sample_info$coordinate_ID %in% colnames(mening_vst))
+sample_timetorec <- subset(sample_1298, !(sample_1298$has_the_tumor_progressed == "yes")) %>% subset(., !(.$time_for_KM_final == "na"))
+sample_timetorec <- subset(sample_timetorec, sample_timetorec$DBSCAN_CLUSTER == "A")
+
+time_rec <- sample_timetorec[, c("coordinate_ID","time_for_KM_final", "RECURRENT_TUMOR")]
+colnames(time_rec) <- c("coordinate_ID", "time", "status")
+#remove samples with status=na
+timerec <- subset(time_rec, !(time_rec$status == "na")) %>% subset(., !(.$time == "na"))
+
+timerec$status[timerec$status == "yes"] <- "1"
+timerec$status[timerec$status == "no"] <- "0"
+timerec$time <- as.numeric( timerec$time)
+timerec$status <- as.numeric( timerec$status)
+
+table(sample_timetorec$CDKN2A_B_LOSS)
+
+cdkyes <- subset(sample_timetorec, sample_timetorec$CDKN2A_B_LOSS == "yes")
+cdkno <- subset(sample_timetorec, sample_timetorec$CDKN2A_B_LOSS == "no")
+
+timerec$Loss[timerec$coordinate_ID %in% cdkyes$coordinate_ID] <- "Yes"
+timerec$Loss[timerec$coordinate_ID %in% cdkno$coordinate_ID] <- "No"
+
+
+#fit1 <- surv_fit(Surv(time, status) ~ cdkn2ab, data = timerec)
+#fit2 <- surv_fit(Surv(time, status) ~ A34, data = timerec)
+
+#timerec <- na.omit(timerec)
+fitAll <- surv_fit(Surv(time, status) ~ Loss, data = timerec)
+summary(survfit2(Surv(time, status) ~ Loss, data = timerec), times = 60)
+p <- surv_pvalue(fitAll)
+
+#fit.list <- list(cdkn2ab = fit1)
+#surv_pvalue(fit.list)
+
+mycol <- c("grey55", "Red")
+ggsurvplot(fitAll,
+           conf.int = FALSE,
+           data = timerec,
+           pval = TRUE,
+           pval.method = FALSE,
+           risk.table = FALSE, 
+           combine = TRUE, 
+           ylab = "Recurrence-free Rate", 
+           xlab = "Time (months)", 
+           ggtheme = theme_KM, 
+           palette = mycol)
+
+ggsave("KM_cdkn2ab_loss_clusterA.pdf", height = 4, width=6)
+
+```
+
+KM plot comparison between different regions in the UMAP
+```{r}
+sample_info <-read.csv("~/Meningioma_clinical_patient_v61_20240430.csv", check.names = F)
+
+sample_1298 <- subset(sample_info, sample_info$coordinate_ID %in% colnames(mening_vst))
+sample_timetorec <- subset(sample_1298, !(sample_1298$has_the_tumor_progressed == "yes")) %>% subset(., !(.$time_for_KM_final == "na"))
+
+time_rec <- sample_timetorec[, c("coordinate_ID","time_for_KM_final", "RECURRENT_TUMOR")]
+colnames(time_rec) <- c("coordinate_ID", "time", "status")
+#remove samples with status=na
+timerec <- subset(time_rec, !(time_rec$status == "na")) %>% subset(., !(.$time == "na"))
+
+timerec$status[timerec$status == "yes"] <- "1"
+timerec$status[timerec$status == "no"] <- "0"
+timerec$time <- as.numeric( timerec$time)
+timerec$status <- as.numeric( timerec$status)
+
+#A2Onc <- read.csv("~/ClusterA_subA2_Onc.csv")
+#A2Onc$Patient <- toupper(A2Onc$Patient)
+finaldf$cluster[finaldf$DBSCAN_CLUSTER == "A"] <- "Aggr.Int. NF2 mut"
+finaldf$cluster[finaldf$DBSCAN_CLUSTER == "B"] <- "Benign NF2 mut"
+finaldf$cluster[finaldf$DBSCAN_CLUSTER == "C"] <- "NF2wt"
+finaldf$cluster[finaldf$DBSCAN_CLUSTER == "D"] <- "NF2wt"
+
+timerec$cluster[timerec$coordinate_ID %in% finaldf$coordinate_ID[finaldf$cluster == "Aggr.Int. NF2 mut"]] <- "A"
+timerec$cluster[timerec$coordinate_ID %in% finaldf$coordinate_ID[finaldf$cluster == "Benign NF2 mut"]] <- "B"
+timerec$cluster[timerec$coordinate_ID %in% finaldf$coordinate_ID[finaldf$cluster == "NF2wt"]] <- "C&D"
+
+timerec$AB[timerec$cluster == "A"] <- "A"
+timerec$AB[timerec$cluster == "B"] <- "B"
+timerec$AC[timerec$cluster == "A"] <- "A"
+timerec$AC[timerec$cluster == "C&D"] <- "C&D"
+timerec$BC[timerec$cluster == "B"] <- "B"
+timerec$BC[timerec$cluster == "C&D"] <- "C&D"
+
+##
+fit1 <- surv_fit(Surv(time, status) ~ AB, data = timerec)
+fit2 <- surv_fit(Surv(time, status) ~ AC, data = timerec)
+fit3 <- surv_fit(Surv(time, status) ~ BC, data = timerec)
+
+
+#timerec <- na.omit(timerec)
+fitAll <- surv_fit(Surv(time, status) ~ cluster, data = timerec)
+#summary(survfit2(Surv(time, status) ~ cluster, data = timerec), times = 60)
+#surv_pvalue(fitAll)
+
+fit.list <- list(AB = fit1, AC = fit2, BC = fit3)
+surv_pvalue(fit.list)
+
+
+mycol <- c("red", "forestgreen", "blue")
+p <- ggsurvplot(fitAll,
+           conf.int = FALSE,
+           data = timerec,
+           pval = FALSE,
+           pval.method = FALSE,
+           risk.table = FALSE, 
+           combine = TRUE, 
+           ylab = "Recurrence-free Rate", 
+           xlab = "Time (months)", 
+           ggtheme = theme_KM, 
+           palette = mycol)
+
+pairwise_pvals <- pairwise_survdiff(Surv(time, status) ~ cluster, data = timerec)
+pairwise_pvals
+
+#	Pairwise comparisons using Log-Rank test 
+#data:  timerec and cluster 
+#
+#    A       B   
+#B   4.4e-12 -   
+#C&D 6.3e-11 0.18
+
+#P value adjustment method: BH 
+
+ggsave("KM_clusters_ABC_2_v2.pdf", height = 4, width=6)
+
+```
+
+
+# Chr 10q
+```{r}
+
+finaldf_CNV$`10q`[is.na(finaldf_CNV$`10q`)] <- "na"
+FF <- subset(finaldf_CNV, finaldf_CNV$`10q` == 0) 
+FF2 <- subset(finaldf_CNV, finaldf_CNV$`10q` == 1) 
+FF3 <- subset(finaldf_CNV, finaldf_CNV$`10q` == -1) 
+finaldf_CNV <- as.data.frame(finaldf_CNV)
+
+ggplot(
+  finaldf_CNV,
+  aes(
+      x = UMAP1_2D,
+      y = UMAP2_2D,
+      color = factor('10q')
+      )
+) + 
+  geom_point(size=1.5) +
+  geom_point(data=FF, aes(x=UMAP1_2D, y=UMAP2_2D, color=factor(`10q`))) +
+  geom_point(data=FF2, aes(x=UMAP1_2D, y=UMAP2_2D, color=factor(`10q`))) +
+  geom_point(data=FF3, aes(x=UMAP1_2D, y=UMAP2_2D, color=factor(`10q`))) +
+  theme_legend +
+  ggtitle("Chr 10q") +
+  scale_color_manual(values = c("-1" = "red",
+                                "1" = "grey",
+                                "0" = "grey", 
+                                "na" = "grey"))
+
+ggsave("Chr10q_casper_leg.pdf", width = 10, height = 7)
+ggsave("Chr10q_casper_noleg.pdf", width = 7, height = 7)
+```
+
+```{r}
+mening_vst.t <- t(mening_vst)
+mening_vst.t <- cbind(rownames(mening_vst.t), data.frame(mening_vst.t, row.names = NULL))
+colnames(mening_vst.t)[1] <- "coordinate_ID"
+```
+
+```{r}
+myPalette <- colorRampPalette((brewer.pal(11, "RdYlBu")))
+mening_vst2 <- mening_vst.t[ , c("coordinate_ID", "PTEN")]
+finaldf_genes <- left_join(finaldf, mening_vst2, by="coordinate_ID")
+summary(finaldf_genes$PTEN)
+lowPTEN <- finaldf_genes[finaldf_genes$PTEN <= 12.369, ]
+ggplot(finaldf_genes,
+       aes(
+         x = UMAP1_2D, 
+         y = UMAP2_2D,
+         colour=PTEN
+       )
+) + 
+  geom_point(size=1.5) +
+  geom_point(data=lowPTEN, aes(x=UMAP1_2D, y=UMAP2_2D, fill = PTEN), shape = 21, color="black", stroke = 0.1) +
+  theme_legend +
+  ggtitle("PTEN") +
+  scale_colour_gradientn(colours = rev(myPalette(11)))
+
+ggsave("GENEEXP_PTEN_vst_noleg.pdf", width = 7, height = 7)
+ggsave("GENEEXP_PTEN_vst_leg.pdf", width = 10, height = 7)
+```
+
+
+KM plot comparing low vs high PTEN samples in NF2 mutant region (cluster A and B)
+```{r}
+#read metadata file to extract time to recurrence information
+sample_info <-read.csv("~/Meningioma_clinical_patient_v61_20240430.csv", check.names = F)
+
+sample_1298 <- subset(sample_info, sample_info$coordinate_ID %in% colnames(mening_vst))
+sample_timetorec2 <- subset(sample_1298, !(sample_1298$has_the_tumor_progressed == "yes")) %>% subset(., !(.$time_for_KM_final == "na"))
+sample_timetorec <- subset(sample_timetorec2, (sample_timetorec2$DBSCAN_CLUSTER == "A" | sample_timetorec2$DBSCAN_CLUSTER == "B"))
+
+
+time_rec <- sample_timetorec[, c("coordinate_ID","time_for_KM_final", "RECURRENT_TUMOR")]
+colnames(time_rec) <- c("coordinate_ID", "time", "status")
+#remove samples with status=na
+timerec <- subset(time_rec, !(time_rec$status == "na")) %>% subset(., !(.$time == "na"))
+
+timerec$status[timerec$status == "yes"] <- "1"
+timerec$status[timerec$status == "no"] <- "0"
+timerec$time <- as.numeric( timerec$time)
+timerec$status <- as.numeric( timerec$status)
+
+mening_vst2 <- mening_vst.t[ , c("coordinate_ID", "PTEN")]
+finaldf_genes <- left_join(finaldf, mening_vst2, by="coordinate_ID")
+pten_AB <- finaldf_genes[finaldf_genes$coordinate_ID %in% sample_timetorec$coordinate_ID, ]
+print(summary(pten_AB$PTEN))
+
+PTEN_H <- pten_AB[pten_AB$PTEN > 12.840, ]
+PTEN_L <- pten_AB[pten_AB$PTEN < 12.339, ]
+
+timerec$PTEN[timerec$coordinate_ID %in% PTEN_H$coordinate_ID] <- "high"
+timerec$PTEN[timerec$coordinate_ID %in% PTEN_L$coordinate_ID] <- "low"
+
+#timerec$A12[timerec$PTEN == "high"] <- "high"
+#timerec$A34[timerec$PTEN == "low"] <- "low"
+
+#fit1 <- surv_fit(Surv(time, status) ~ A12, data = timerec)
+#fit2 <- surv_fit(Surv(time, status) ~ A34, data = timerec)
+
+#timerec <- na.omit(timerec)
+fitAll <- surv_fit(Surv(time, status) ~ PTEN, data = timerec)
+summary(survfit2(Surv(time, status) ~ PTEN, data = timerec), times = 60)
+p <- surv_pvalue(fitAll)
+p
+
+#fit.list <- list(A12 = fit1, A34 = fit2)
+#surv_pvalue(fit.list)
+
+
+mycol <- c("gold", "blue")
+ggsurvplot(fitAll,
+           conf.int = FALSE,
+           data = timerec,
+           pval = TRUE,
+           pval.method = FALSE,
+           risk.table = FALSE, 
+           combine = TRUE, 
+           ylab = "Recurrence-free Rate", 
+           xlab = "Time (months)", 
+           ggtheme = theme_KM, 
+           palette = mycol)
+
+ggsave("KM_PTEN_clustersAandB.pdf", height = 4, width=6)
+
+```
+
+
+KM plot comparing low vs high PTEN samples in Aggressive NF2 mutant region (Cluster A)
+```{r}
+#read metadata file to extract time to recurrence information
+sample_info <-read.csv("~/Meningioma_clinical_patient_v61_20240430.csv", check.names = F)
+
+sample_1298 <- subset(sample_info, sample_info$coordinate_ID %in% colnames(mening_vst))
+sample_timetorec <- subset(sample_1298, !(sample_1298$has_the_tumor_progressed == "yes")) %>% subset(., !(.$time_for_KM_final == "na"))
+sample_timetorec <- subset(sample_timetorec,sample_timetorec$DBSCAN_CLUSTER == "A" )
+
+time_rec <- sample_timetorec[, c("coordinate_ID","time_for_KM_final", "RECURRENT_TUMOR")]
+colnames(time_rec) <- c("coordinate_ID", "time", "status")
+#remove samples with status=na
+timerec <- subset(time_rec, !(time_rec$status == "na")) %>% subset(., !(.$time == "na"))
+
+timerec$status[timerec$status == "yes"] <- "1"
+timerec$status[timerec$status == "no"] <- "0"
+timerec$time <- as.numeric( timerec$time)
+timerec$status <- as.numeric( timerec$status)
+
+mening_tpm <- readRDS("~/1298samples_combatseq_log2tpm.rds")
+mening_tpm.t <- t(mening_tpm) %>% as.data.frame(.) %>%
+  rownames_to_column(., var = "coordinate_ID")
+mening_tpm2 <- mening_tpm.t[ , c("coordinate_ID", "PTEN")]
+finaldf_genes <- left_join(finaldf, mening_tpm2, by="coordinate_ID")
+pten_A <- finaldf_genes[finaldf_genes$coordinate_ID %in% sample_timetorec$coordinate_ID, ]
+print(summary(pten_A$PTEN))
+
+PTEN_H <- pten_A[pten_A$PTEN > 3.704, ]
+PTEN_L <- pten_A[pten_A$PTEN < 2.695, ]
+
+timerec$PTEN[timerec$coordinate_ID %in% PTEN_H$coordinate_ID] <- "high"
+timerec$PTEN[timerec$coordinate_ID %in% PTEN_L$coordinate_ID] <- "low"
+
+#timerec$A12[timerec$PTEN == "high"] <- "high"
+#timerec$A34[timerec$PTEN == "low"] <- "low"
+
+#fit1 <- surv_fit(Surv(time, status) ~ A12, data = timerec)
+#fit2 <- surv_fit(Surv(time, status) ~ A34, data = timerec)
+
+#timerec <- na.omit(timerec)
+fitAll <- surv_fit(Surv(time, status) ~ PTEN, data = timerec)
+summary(survfit2(Surv(time, status) ~ PTEN, data = timerec), times = 60)
+p <- surv_pvalue(fitAll)
+p
+
+#fit.list <- list(A12 = fit1, A34 = fit2)
+#surv_pvalue(fit.list)
+
+mycol <- c("gold", "blue")
+ggsurvplot(fitAll,
+           conf.int = FALSE,
+           data = timerec,
+           pval = TRUE,
+           pval.method = FALSE,
+           risk.table = FALSE, 
+           combine = TRUE, 
+           ylab = "Recurrence-free Rate", 
+           xlab = "Time (months)", 
+           ggtheme = theme_KM, 
+           palette = mycol)
+
+ggsave("KM_PTEN_clustersA.pdf", height = 4, width=6)
+```
+
+
+```{r}
+#gsva calculation for all meningioma samples was done as part of the Thirimanne et al 2024 publication
+#load gsva count file
+gsva_1271 <- readRDS("~/1298_gsvascores_10763.rds")
+myPalette <- rev(brewer.pal(11, "RdYlBu"))
+
+gsva_1271.t <- t(gsva_1271) %>% 
+  as.data.frame(.) %>%
+  rownames_to_column(., var="coordinate_ID")
+
+gsva_1271_2 <- gsva_1271.t[ , c("coordinate_ID", "REACTOME_CELL_CYCLE")]
+finaldf_genes <- left_join(finaldf, gsva_1271_2, by="coordinate_ID")
+ggplot(finaldf_genes %>% arrange(REACTOME_CELL_CYCLE),
+       aes(
+         x = UMAP1_2D, 
+         y = UMAP2_2D,
+         colour=REACTOME_CELL_CYCLE
+       )
+) + 
+  geom_point(size=1.5) +
+  theme_legend +
+  ggtitle("REACTOME_CELL_CYCLE") +
+  scale_colour_gradientn(colours = myPalette, limits=c(-1,1))
+ggsave("REACTOME_CELL_CYCLE_leg.pdf", width = 10, height = 7)
+ggsave("REACTOME_CELL_CYCLE_noleg.pdf", width = 7, height = 7)
+```
+
+
+
